@@ -1,5 +1,5 @@
 {
-  "name": "@medusajs/payment-razorpay",
+  "name": "@globalbeestech/payment-razorpay",
   "version": "2.0.0",
   "description": "Razorpay payment provider for Medusa",
   "main": "dist/index.js",
