@@ -1,0 +1,14 @@
+{
+  "extends": "../../_tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@models": ["./src/models"],
+      "@modules": ["./src/modules"],
+      "@services": ["./src/services"],
+      "@repositories": ["./src/repositories"],
+      "@types": ["./src/types"],
+      "@utils": ["./src/utils"]
+    }
+  },
+  "exclude": ["src/**/__tests__", "src/**/__mocks__", "src/**/__fixtures__"]
+}
