@@ -1,5 +1,5 @@
 {
-  "name": "@medusajs/strapi-sync",
+  "name": "@globalbeestech/strapi-sync",
   "version": "2.0.0",
   "main": "dist/index.js",
   "repository": {

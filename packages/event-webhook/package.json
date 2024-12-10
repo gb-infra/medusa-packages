@@ -1,5 +1,5 @@
 {
-  "name": "@medusajs/event-webhook",
+  "name": "@globalbeestech/event-webhook",
   "version": "2.0.0",
   "description": "Medusa Event Webhook module",
   "main": "dist/index.js",
