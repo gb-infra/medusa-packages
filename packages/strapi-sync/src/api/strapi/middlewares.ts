@@ -1,10 +1,16 @@
 import { MiddlewareRoute } from "@medusajs/medusa";
 import { hooksMiddlewares } from "./hooks/middlewares";
-import { MedusaNextFunction, MedusaRequest, MedusaResponse } from "@medusajs/framework";
+import {
+  MedusaNextFunction,
+  MedusaRequest,
+  MedusaResponse,
+} from "@medusajs/framework";
 import { Modules } from "@medusajs/framework/utils";
+import { adminMiddlewares } from "./admin/middlewares";
 
 export const strapiMiddlewares: MiddlewareRoute[] = [
   ...hooksMiddlewares,
+  ...adminMiddlewares,
   {
     method: ["POST", "OPTIONS"],
     matcher: /^\/strapi\/(hooks|contents)\/.*/,
