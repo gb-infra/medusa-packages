@@ -21,9 +21,9 @@ import {
   StrapiGetResult,
   StrapiQueryInterface,
   AdminResult,
-  LoginTokenExpiredError,
   StrapiEntity,
   MedusaGetResult,
+  LoginTokenExpiredErrorParams,
 } from "@types";
 import { UpdateStrapiService } from "@services";
 import {
@@ -90,6 +90,18 @@ axiosRetry(axios, {
 });
 
 const IGNORE_THRESHOLD = 3; // seconds
+
+export class LoginTokenExpiredError extends AxiosError {
+  constructor(readonly error: LoginTokenExpiredErrorParams) {
+    super(
+      error.message,
+      "401",
+      error.error?.config,
+      error.error?.request,
+      error.error?.response
+    );
+  }
+}
 
 export interface UpdateStrapiServiceParams {
   readonly regionModuleService: IRegionModuleService;

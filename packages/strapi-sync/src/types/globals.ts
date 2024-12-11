@@ -165,18 +165,6 @@ export interface LoginTokenExpiredErrorParams
   time?: Date;
 }
 
-export class LoginTokenExpiredError extends AxiosError {
-  constructor(readonly error: LoginTokenExpiredErrorParams) {
-    super(
-      error.message,
-      "401",
-      error.error?.config,
-      error.error?.request,
-      error.error?.response
-    );
-  }
-}
-
 export type StrapiSeedType =
   | Record<string, StrapiEntity[]>
   | Record<string, StrapiEntity>
