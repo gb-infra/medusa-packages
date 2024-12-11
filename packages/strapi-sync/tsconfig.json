@@ -7,7 +7,8 @@
       "@services": ["./src/services"],
       "@repositories": ["./src/repositories"],
       "@types": ["./src/types"],
-      "@utils": ["./src/utils"]
+      "@utils": ["./src/utils"],
+      "@constants": ["./src/constants"]
     }
   },
   "exclude": ["src/**/__tests__", "src/**/__mocks__", "src/**/__fixtures__"]

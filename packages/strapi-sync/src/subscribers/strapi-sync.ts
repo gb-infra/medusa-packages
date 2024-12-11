@@ -2,6 +2,7 @@ import {
   IEventBusModuleService,
   IProductModuleService,
   Logger,
+  ProductDTO,
 } from "@medusajs/framework/types";
 import { UpdateStrapiService } from "@services";
 import { AuthInterface } from "@types";
@@ -27,7 +28,7 @@ class StrapiSubscriber {
 
     this.eventBusModuleService_.subscribe(
       "region.created",
-      async ({ data, name, metadata }) => {
+      async ({ data }) => {
         const authInterace: AuthInterface =
           (await this.getLoggedInUserStrapiCreds()) ??
           this.updateStrapiService_.defaultAuthInterface;
@@ -83,16 +84,17 @@ class StrapiSubscriber {
         const authInterace: AuthInterface =
           (await this.getLoggedInUserStrapiCreds()) ??
           this.updateStrapiService_.defaultAuthInterface;
-        await this.updateStrapiService_.updateProductInStrapi(data);
+        await this.updateStrapiService_.updateProductInStrapi(
+          data as Partial<ProductDTO>
+        );
+
         if ((data as any).variants?.length > 0) {
-          const result = (data as any).variants.map(
-            async (value, index, array) => {
-              await this.updateStrapiService_.updateProductVariantInStrapi(
-                value,
-                authInterace
-              );
-            }
-          );
+          const result = (data as any).variants.map(async (value) => {
+            await this.updateStrapiService_.updateProductVariantInStrapi(
+              value,
+              authInterace
+            );
+          });
           await Promise.all(result);
         }
       }

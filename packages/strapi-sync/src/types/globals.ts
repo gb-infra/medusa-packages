@@ -1,6 +1,6 @@
-import { Method } from "axios";
-import { FindConfig } from "@medusajs/framework/types";
+import { AxiosError, Method } from "axios";
 import { BaseEntity } from "@medusajs/framework/utils";
+import { IModuleService } from "@medusajs/framework/types";
 
 export interface StrapiMedusaPluginOptions {
   sync_on_init?: boolean;
@@ -29,6 +29,12 @@ export type Tokens = {
   [key: string]: userCreds;
 };
 
+export interface StrapiSignalInterface {
+  message: string;
+  code: number;
+  data: any;
+}
+
 export interface AuthInterface {
   email?: string;
   password?: string;
@@ -56,7 +62,7 @@ export interface StrapiSendParams {
   method?: Method;
   type: string;
   authInterface: AuthInterface;
-  data?: BaseEntity;
+  data?: any;
   id?: string;
   action?: string;
   username?: string;
@@ -73,13 +79,15 @@ export interface StrapiAdminSendParams {
   query?: string;
 }
 
-export interface CreateInStrapiParams<T> {
+export interface CreateInStrapiParams<
+  T extends Record<string, any>,
+  K extends IModuleService
+> {
   id: string;
   authInterface: AuthInterface;
   strapiEntityType: string;
-  medusaService: {
-    retrieve: (id: string, config: FindConfig<T>) => Promise<T>;
-  };
+  serviceMethod: keyof K;
+  medusaService: K;
   selectFields: (keyof T)[];
   relations: string[];
 }
@@ -90,4 +98,101 @@ export interface GetFromStrapiParams {
   strapiEntityType: string;
   urlParams?: Record<string, string>;
   urlQuery?: Record<string, unknown>;
+}
+
+export type StrapiEntity = Omit<BaseEntity, "id"> & {
+  id?: string;
+  medusa_id?: string;
+};
+export type AdminResult = { data: any; status: number };
+export type AdminGetResult = {
+  data: {
+    data: {
+      results: [];
+    };
+    meta: any;
+  };
+  status: number;
+};
+
+export type MedusaGetResult<T> = {
+  data: T;
+  meta?: any;
+
+  status: number;
+  medusa_id?: string;
+  id?: number;
+};
+
+export type StrapiResult = {
+  medusa_id?: string;
+  id?: number;
+  data?: any | any[];
+  meta?: Record<string, any>;
+  status: number;
+  query?: string;
+};
+
+export type StrapiGetResult =
+  | StrapiResult
+  | {
+      data: any[];
+      meta?: any;
+
+      status: number;
+      medusa_id?: string;
+      id?: number | string;
+    };
+
+export interface StrapiQueryInterface {
+  fields: string[];
+  filters: Record<string, unknown>;
+  populate?: any;
+  sort?: string[];
+  pagination?: {
+    pageSize: number;
+    page: number;
+  };
+  publicationState?: string;
+  locale?: string[];
+}
+
+export interface LoginTokenExpiredErrorParams
+  extends Partial<StrapiSendParams> {
+  response?: { status: number };
+  message?: string;
+  error?: AxiosError;
+  time?: Date;
+}
+
+export class LoginTokenExpiredError extends AxiosError {
+  constructor(readonly error: LoginTokenExpiredErrorParams) {
+    super(
+      error.message,
+      "401",
+      error.error?.config,
+      error.error?.request,
+      error.error?.response
+    );
+  }
+}
+
+export type StrapiSeedType =
+  | Record<string, StrapiEntity[]>
+  | Record<string, StrapiEntity>
+  | StrapiEntity;
+
+export interface StrapiSeedInterface {
+  meta: {
+    pageNumber: number;
+    pageLimit: number;
+    hasMore: Record<string, boolean>;
+  };
+  data: StrapiSeedType;
+}
+
+export interface UpdateMedusaDataInterface {
+  type: string;
+  data: any;
+  origin: "strapi" | "medusa";
 }

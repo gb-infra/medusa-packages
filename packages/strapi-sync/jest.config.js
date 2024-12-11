@@ -6,5 +6,6 @@ module.exports = defineJestConfig({
     "^@repositories": "<rootDir>/src/repositories",
     "^@types": "<rootDir>/src/types",
     "^@utils": "<rootDir>/src/utils",
+    "^@constants": "<rootDir>/src/constants",
   }
 })

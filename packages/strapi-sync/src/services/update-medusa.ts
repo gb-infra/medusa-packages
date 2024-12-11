@@ -4,29 +4,31 @@ import {
   IProductModuleService,
   IRegionModuleService,
   Logger,
+  ProductDTO,
+  ProductVariantDTO,
+  RegionDTO,
+  UpdateProductDTO,
+  UpdateProductVariantDTO,
 } from "@medusajs/framework/types";
+import Redis from "ioredis";
 
-function isEmptyObject(obj): boolean {
-  // eslint-disable-next-line guard-for-in
-  for (const i in obj) {
-    return false;
-  }
-  return true;
+function isEmptyObject(obj: Record<string, any>): boolean {
+  return Object.keys(obj ?? {}).length === 0;
 }
 
 class UpdateMedusaService extends MedusaService({}) {
   productModuleService_: IProductModuleService;
-  redisClient_: any;
+  redisClient_: Redis;
   regionModuleService_: IRegionModuleService;
   logger: Logger;
   constructor(container: {
     productModuleService: IProductModuleService;
     regionModuleService: IRegionModuleService;
-    redisClient: any;
+    redisConnection: Redis;
     logger: Logger;
   }) {
     super(container);
-    this.redisClient_ = container.redisClient;
+    this.redisClient_ = container.redisConnection;
     this.productModuleService_ = container.productModuleService;
     this.regionModuleService_ = container.regionModuleService;
     this.logger = container.logger;
@@ -35,130 +37,104 @@ class UpdateMedusaService extends MedusaService({}) {
   async sendStrapiProductVariantToMedusa(
     variantEntry,
     variantId
-  ): Promise<ProductVariant> {
+  ): Promise<ProductVariantDTO> {
     const ignore = await shouldIgnore_(variantId, "medusa", this.redisClient_);
-    if (ignore) {
-      return;
+    if (ignore)
+      throw new Error(
+        "Invalid request, update is already done by another instance!!"
+      );
+
+    const variant = await this.productModuleService_.retrieveProductVariant(
+      variantId
+    );
+    const update: Partial<UpdateProductVariantDTO> = {};
+
+    if (variant.title !== variantEntry.title) {
+      update["title"] = variantEntry.title;
     }
 
-    const result = await this.atomicPhase_(async (manager) => {
-      const variant = await this.productModuleService_
-        .withTransaction(manager)
-        .retrieve(variantId);
-      const update: Partial<ProductVariant> = {};
-      try {
-        if (variant.title !== variantEntry.title) {
-          update["title"] = variantEntry.title;
-        }
+    if (isEmptyObject(update)) return variant;
 
-        if (!isEmptyObject(update)) {
-          const updatedVariant = await this.productVariantService_
-            .withTransaction(manager)
-            .update(variantId, update)
-            .then(async () => {
-              return await addIgnore_(variantId, "strapi", this.redisClient_);
-            });
+    const updatedVariant =
+      await this.productModuleService_.updateProductVariants(variantId, update);
 
-          return updatedVariant;
-        }
-      } catch (error) {
-        this.logger.error(error);
-        return;
-      }
-    });
-    return result;
+    await addIgnore_(variantId, "strapi", this.redisClient_);
+    return updatedVariant;
   }
 
-  async sendStrapiProductToMedusa(productEntry, productId): Promise<Product> {
+  async sendStrapiProductToMedusa(
+    productEntry,
+    productId
+  ): Promise<ProductDTO> {
     const ignore = await shouldIgnore_(productId, "medusa", this.redisClient_);
-    if (ignore) {
-      return;
+    if (ignore)
+      throw new Error(
+        "Invalid request, update is already done by another instance!!"
+      );
+
+    const product = await this.productModuleService_.retrieveProduct(productId);
+    if (
+      product.handle.toLowerCase().trim() !=
+      productEntry.handle.toLowerCase().trim()
+    ) {
+      this.logger.error(`handle and id mismatch in strapi, `);
+      throw new Error(
+        "Synchronization Error - handles mismatched, please resync with strapi after dumping strapi database"
+      );
+    }
+    const update: UpdateProductDTO = {};
+    this.logger.debug("old data in medusa : " + JSON.stringify(product));
+    this.logger.debug(
+      "data received from strapi : " + JSON.stringify(productEntry)
+    );
+    const entryKeys = Object.keys(productEntry);
+    for (const key of entryKeys) {
+      if (
+        !(productEntry[key] instanceof Object) &&
+        !Array.isArray(productEntry[key])
+      ) {
+        if (
+          product[key] != productEntry[key] &&
+          key != "medusa_id" &&
+          key != "id"
+        )
+          update[key] = productEntry[key];
+      }
     }
 
-    // get entry from Strapi
-    // const productEntry = null
+    if (isEmptyObject(update)) return product;
 
-    const result = await this.atomicPhase_(async (manager) => {
-      try {
-        const product = await this.productService_
-          .withTransaction(manager)
-          .retrieve(productId);
-        if (
-          product.handle.toLowerCase().trim() !=
-          productEntry.handle.toLowerCase().trim()
-        ) {
-          this.logger.error(`handle and id mismatch in strapi, `);
-          throw new Error(
-            "Synchronization Error - handles mismatched, please resync with strapi after dumping strapi database"
-          );
-        }
-        const update = {};
-        this.logger.debug("old data in medusa : " + JSON.stringify(product));
-        this.logger.debug(
-          "data received from strapi : " + JSON.stringify(productEntry)
-        );
-        const entryKeys = Object.keys(productEntry);
-        for (const key of entryKeys) {
-          if (
-            !(productEntry[key] instanceof Object) &&
-            !Array.isArray(productEntry[key])
-          ) {
-            if (
-              product[key] != productEntry[key] &&
-              key != "medusa_id" &&
-              key != "id"
-            )
-              update[key] = productEntry[key];
-          }
-        }
+    const updated = await this.productModuleService_.updateProducts(
+      productId,
+      update
+    );
 
-        if (!isEmptyObject(update)) {
-          await this.productService_
-            .withTransaction(manager)
-            .update(productId, update)
-            .then(async () => {
-              return await addIgnore_(productId, "strapi", this.redisClient_);
-            });
-        }
-        return product;
-      } catch (error) {
-        this.logger.error(error);
-        return;
-      }
-    });
+    await addIgnore_(productId, "strapi", this.redisClient_);
+    return updated;
   }
 
-  async sendStrapiRegionToMedusa(regionEntry, regionId): Promise<Region> {
+  async sendStrapiRegionToMedusa(regionEntry, regionId): Promise<RegionDTO> {
     const ignore = await shouldIgnore_(regionId, "medusa", this.redisClient_);
-    if (ignore) {
-      return;
+    if (ignore)
+      throw new Error(
+        "Invalid request, update is already done by another instance!!"
+      );
+
+    const region = await this.regionModuleService_.retrieveRegion(regionId);
+    const update = {};
+
+    if (region.name !== regionEntry.name) {
+      update["name"] = regionEntry.name;
     }
-    const result = await this.atomicPhase_(async (manager) => {
-      try {
-        const region = await this.regionService_
-          .withTransaction(manager)
-          .retrieve(regionId);
-        const update = {};
+    if (isEmptyObject(update)) return region;
 
-        if (region.name !== regionEntry.name) {
-          update["name"] = regionEntry.name;
-        }
+    const updated = await this.regionModuleService_.updateRegions(
+      regionId,
+      update
+    );
 
-        if (!isEmptyObject(update)) {
-          const updatedRegion = await this.regionService_
-            .withTransaction(manager)
-            .update(regionId, update)
-            .then(async () => {
-              return await addIgnore_(regionId, "strapi", this.redisClient_);
-            });
-          return updatedRegion;
-        }
-        return result;
-      } catch (error) {
-        this.logger.error(error);
-        return;
-      }
-    });
+    await addIgnore_(regionId, "strapi", this.redisClient_);
+    return updated;
   }
 }
 

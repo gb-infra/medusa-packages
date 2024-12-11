@@ -1,5 +1,6 @@
 "use strict";
 
+import Redis from "ioredis";
 import { AxiosResponse, AxiosError, Method, default as axios } from "axios";
 import axiosRetry from "axios-retry";
 import qs from "qs";
@@ -16,6 +17,13 @@ import {
   GetFromStrapiParams,
   userCreds as UserCreds,
   StrapiAdminSendParams,
+  StrapiResult,
+  StrapiGetResult,
+  StrapiQueryInterface,
+  AdminResult,
+  LoginTokenExpiredError,
+  StrapiEntity,
+  MedusaGetResult,
 } from "@types";
 import { UpdateStrapiService } from "@services";
 import {
@@ -24,12 +32,13 @@ import {
   MedusaService,
 } from "@medusajs/framework/utils";
 import {
-  IEventBusModuleService,
   IProductModuleService,
   IRegionModuleService,
   ISalesChannelModuleService,
   Logger,
+  ProductDTO,
 } from "@medusajs/framework/types";
+import { sleep } from "@utils";
 
 let strapiRetryDelay: number;
 
@@ -80,88 +89,14 @@ axiosRetry(axios, {
   },
 });
 
-export type StrapiEntity = BaseEntity & { medusa_id?: string };
-export type AdminResult = { data: any; status: number };
-export type AdminGetResult = {
-  data: {
-    data: {
-      results: [];
-    };
-    meta: any;
-  };
-  status: number;
-};
-
-export type MedusaGetResult<T> = {
-  data: T;
-  meta?: any;
-
-  status: number;
-  medusa_id?: string;
-  id?: number;
-};
-
-export type StrapiResult = {
-  medusa_id?: string;
-  id?: number;
-  data?: any | any[];
-  meta?: Record<string, any>;
-  status: number;
-  query?: string;
-};
-
-export type StrapiGetResult =
-  | StrapiResult
-  | {
-      data: any[];
-      meta?: any;
-
-      status: number;
-      medusa_id?: string;
-      id?: number | string;
-    };
 const IGNORE_THRESHOLD = 3; // seconds
 
-export interface StrapiQueryInterface {
-  fields: string[];
-  filters: Record<string, unknown>;
-  populate?: any;
-  sort?: string[];
-  pagination?: {
-    pageSize: number;
-    page: number;
-  };
-  publicationState?: string;
-  locale?: string[];
-}
-
 export interface UpdateStrapiServiceParams {
-  regionModuleService: IRegionModuleService;
-  productModuleService: IProductModuleService;
-  redisClient: any;
-  eventBusModuleService: IEventBusModuleService;
-  logger: Logger;
-  salesChannelModuleService: ISalesChannelModuleService;
-}
-
-export interface LoginTokenExpiredErrorParams
-  extends Partial<StrapiSendParams> {
-  response?: { status: number };
-  message?: string;
-  error?: AxiosError;
-  time?: Date;
-}
-
-export class LoginTokenExpiredError extends AxiosError {
-  constructor(private readonly error: LoginTokenExpiredErrorParams) {
-    super(
-      error.message,
-      "401",
-      error.error?.config,
-      error.error?.request,
-      error.error?.response
-    );
-  }
+  readonly regionModuleService: IRegionModuleService;
+  readonly productModuleService: IProductModuleService;
+  readonly redisConnection: Redis;
+  readonly logger: Logger;
+  readonly salesChannelModuleService: ISalesChannelModuleService;
 }
 
 export class UpdateMedusaService extends MedusaService({}) {
@@ -172,10 +107,10 @@ export class UpdateMedusaService extends MedusaService({}) {
   strapi_url: string;
   encryption_key?: string;
   userTokens: Tokens;
-  redis_: any;
+  redisClient_: Redis;
   key: WithImplicitCoercion<ArrayBuffer | SharedArrayBuffer>;
   defaultAuthInterface: AuthInterface;
-  strapiSuperAdminAuthToken: string;
+  strapiSuperAdminAuthToken?: string;
   defaultUserEmail: string;
   defaultUserPassword?: string;
   userAdminProfile: { email: string };
@@ -189,19 +124,18 @@ export class UpdateMedusaService extends MedusaService({}) {
   private readonly _productModuleService_: IProductModuleService;
   private readonly _salesChannelModuleService_: ISalesChannelModuleService;
   private readonly _regionModuleService_: IRegionModuleService;
-  private readonly _eventBusModuleService_: IEventBusModuleService;
 
   constructor(
     container: UpdateStrapiServiceParams,
     options: StrapiMedusaPluginOptions
   ) {
     super(container);
+
     this.selfTestMode = false;
     this.enableAdminDataLogging = process.env.NODE_ENV == "test" ? true : false;
     this.logger = container.logger ?? (console as any);
     this._productModuleService_ = container.productModuleService;
     this._regionModuleService_ = container.regionModuleService;
-    this._eventBusModuleService_ = container.eventBusModuleService;
     this._salesChannelModuleService_ = container.salesChannelModuleService;
 
     this.options_ = options;
@@ -224,6 +158,7 @@ export class UpdateMedusaService extends MedusaService({}) {
       password: this.defaultUserPassword,
     };
     this.userTokens = {};
+
     this.executeStrapiHealthCheck().then(
       async (res) => {
         if (res && this.options_.auto_start) {
@@ -236,9 +171,7 @@ export class UpdateMedusaService extends MedusaService({}) {
             this.strapiPluginLog("error", error.message);
           }
 
-          if (!startupStatus) {
-            throw new Error("strapi startup error");
-          }
+          if (!startupStatus) throw new Error("strapi startup error");
         }
       },
       () => {
@@ -247,32 +180,7 @@ export class UpdateMedusaService extends MedusaService({}) {
     );
 
     // attaching the default user
-    this.redis_ = container.redisClient;
-  }
-
-  withTransaction(transactionManager): this {
-    if (!transactionManager) {
-      return this;
-    }
-    const cloned = new UpdateStrapiService(
-      {
-        manager: transactionManager,
-        logger: this.logger,
-        productService: this._productService_,
-        productVariantService: this._productVariantService_,
-        productTypeService: this._productTypeService_,
-        regionService: this._regionService_,
-        eventBusService: this._eventBusService_,
-        redisClient: this.redis_,
-        productCollectionService: this._productCollectionService_,
-        productCategoryService: this._productCategoryService_,
-        salesChannelService: this._salesChannelService_,
-      },
-      this.options_
-    );
-
-    this.transactionManager_ = transactionManager;
-    return cloned as this;
+    this.redisClient_ = container.redisConnection;
   }
 
   async startInterface(): Promise<any> {
@@ -303,7 +211,7 @@ export class UpdateMedusaService extends MedusaService({}) {
 
   async addIgnore_(id, side): Promise<any> {
     const key = `${id}_ignore_${side}`;
-    return await this.redis_.set(
+    return await this.redisClient_.set(
       key,
       1,
       "EX",
@@ -313,7 +221,7 @@ export class UpdateMedusaService extends MedusaService({}) {
 
   async shouldIgnore_(id, side): Promise<any> {
     const key = `${id}_ignore_${side}`;
-    return await this.redis_.get(key);
+    return await this.redisClient_.get(key);
   }
 
   async getVariantEntries_(
@@ -329,7 +237,7 @@ export class UpdateMedusaService extends MedusaService({}) {
   }
 
   async createImageAssets(
-    product: Product,
+    product: ProductDTO,
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
     const assets = await Promise.all(
@@ -359,11 +267,11 @@ export class UpdateMedusaService extends MedusaService({}) {
     }
   }
 
-  async createEntityInStrapi<T extends BaseEntity>(
-    params: CreateInStrapiParams<T>
+  async createEntityInStrapi<T extends Record<string, any>>(
+    params: CreateInStrapiParams<T, any>
   ): Promise<StrapiResult> {
     await this.checkType(params.strapiEntityType, params.authInterface);
-    const entity = await params.medusaService.retrieve(params.id, {
+    const entity = await params.medusaService[params.serviceMethod](params.id, {
       select: params.selectFields,
       relations: params.relations,
     });
@@ -422,15 +330,19 @@ export class UpdateMedusaService extends MedusaService({}) {
     productTypeId: string,
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
-    return await this.createEntityInStrapi({
+    const params: CreateInStrapiParams<
+      ProductDTO,
+      typeof this._productModuleService_
+    > = {
       id: productTypeId,
       authInterface: authInterface,
-
       strapiEntityType: "product-types",
-      medusaService: this._productTypeService_,
-      selectFields: ["id", "value"],
+      medusaService: this._productModuleService_,
+      serviceMethod: "retrieveProductType",
+      selectFields: ["id"],
       relations: [],
-    });
+    };
+    return await this.createEntityInStrapi(params);
   }
 
   async createProductInStrapi(
@@ -446,19 +358,22 @@ export class UpdateMedusaService extends MedusaService({}) {
 
     // eslint-disable-next-line no-useless-catch
     try {
-      const product = await this._productService_.retrieve(productId, {
-        relations: [
-          "options",
-          "variants",
-          "variants.prices",
-          "variants.options",
-          "type",
-          "collection",
-          "categories",
-          "tags",
-          "images",
-        ],
-      });
+      const product = await this._productModuleService_.retrieveProduct(
+        productId,
+        {
+          relations: [
+            "options",
+            "variants",
+            "variants.prices",
+            "variants.options",
+            "type",
+            "collection",
+            "categories",
+            "tags",
+            "images",
+          ],
+        }
+      );
 
       if (!product)
         throw new MedusaError(
@@ -470,7 +385,7 @@ export class UpdateMedusaService extends MedusaService({}) {
        * Todo implement schema validator
        */
 
-      const productToSend = _.cloneDeep(product);
+      const productToSend: any = _.cloneDeep(product);
       productToSend["product_type"] = _.cloneDeep(productToSend.type);
       delete productToSend.type;
       productToSend["product_tags"] = _.cloneDeep(productToSend.tags);
@@ -529,35 +444,30 @@ export class UpdateMedusaService extends MedusaService({}) {
         return { status: 400 };
       }
 
-      const collection = await this._productCollectionService_.retrieve(
-        data.id,
-        {
+      const collection =
+        await this._productModuleService_.retrieveProductCollection(data.id, {
           relations: ["products"],
+        });
+
+      if (!collection) return { status: 400 };
+      // Update entry in Strapi
+      const response = await this.updateEntryInStrapi({
+        type: "product-collections",
+        id: collection.id,
+        authInterface,
+        data: { ...collection, ...data },
+        method: "put",
+      });
+      this.strapiPluginLog(
+        "info",
+        `Successfully updated collection ${collection.id} in Strapi`,
+        {
+          "response.status": response.status,
+          "response.data": response.data,
+          "entity.id": collection.id,
         }
       );
-
-      if (collection) {
-        // Update entry in Strapi
-        const response = await this.updateEntryInStrapi({
-          type: "product-collections",
-          id: collection.id,
-          authInterface,
-          data: { ...collection, ...data },
-          method: "put",
-        });
-        this.strapiPluginLog(
-          "info",
-          `Successfully updated collection ${collection.id} in Strapi`,
-          {
-            "response.status": response.status,
-            "response.data": response.data,
-            "entity.id": collection.id,
-          }
-        );
-        return response;
-      }
-
-      return { status: 400 };
+      return response;
     } catch (error) {
       this.strapiPluginLog("info", "Failed to update product collection", {
         "entity.id": data.id,
@@ -604,38 +514,31 @@ export class UpdateMedusaService extends MedusaService({}) {
     collectionId: string,
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('product-collections', authInterface)
-			.then(() => true)
-			.catch(() => false);
-
-		if (!hasType) {
-			return Promise.resolve({
-				status: 400,
-			});
-		}*/
     try {
-      const collection = await this._productCollectionService_.retrieve(
-        collectionId
-      );
+      const collection =
+        await this._productModuleService_.retrieveProductCollection(
+          collectionId
+        );
 
+      if (!collection) throw new Error("Invalid request, no collection found!");
       // this.strapiPluginLog("info",variant)
-      if (collection) {
-        const collectionToSend = _.cloneDeep(collection);
 
-        const result = await this.createEntryInStrapi({
-          type: "product-collections",
-          id: collectionId,
-          authInterface,
-          data: collectionToSend,
-          method: "POST",
-        });
-        return result;
-      }
+      const collectionToSend = _.cloneDeep(collection);
+
+      const result = await this.createEntryInStrapi({
+        type: "product-collections",
+        id: collectionId,
+        authInterface,
+        data: collectionToSend,
+        method: "POST",
+      });
+      return result;
     } catch (error) {
       this.strapiPluginLog(
         "error",
         `unable to create collection ${collectionId} ${error.message}`
       );
+      throw error;
     }
   }
 
@@ -659,34 +562,31 @@ export class UpdateMedusaService extends MedusaService({}) {
 
     try {
       const ignore = await this.shouldIgnore_(data.id, "strapi");
-      if (ignore) {
-        return { status: 400 };
-      }
+      if (ignore) return { status: 400 };
 
-      const category = await this._productCategoryService_.retrieve(data.id);
+      const category =
+        await this._productModuleService_.retrieveProductCategory(data.id);
 
-      if (category) {
-        // Update entry in Strapi
-        const response = await this.updateEntryInStrapi({
-          type: "product-categories",
-          id: category.id,
-          authInterface,
-          data: { ...category, ...data },
-          method: "put",
-        });
-        this.strapiPluginLog(
-          "info",
-          `Successfully updated category ${category.id} in Strapi`,
-          {
-            "response.status": response.status,
-            "response.data": response.data,
-            "entity.id": category.id,
-          }
-        );
-        return response;
-      }
+      if (!category) return { status: 400 };
 
-      return { status: 400 };
+      // Update entry in Strapi
+      const response = await this.updateEntryInStrapi({
+        type: "product-categories",
+        id: category.id,
+        authInterface,
+        data: { ...category, ...data },
+        method: "put",
+      });
+      this.strapiPluginLog(
+        "info",
+        `Successfully updated category ${category.id} in Strapi`,
+        {
+          "response.status": response.status,
+          "response.data": response.data,
+          "entity.id": category.id,
+        }
+      );
+      return response;
     } catch (error) {
       this.strapiPluginLog("info", "Failed to update product category", {
         "entity.id": data.id,
@@ -712,7 +612,8 @@ export class UpdateMedusaService extends MedusaService({}) {
       const ignore = await this.shouldIgnore_(data.id, "strapi");
       if (ignore) return { status: 400 };
 
-      const sales_channel = await this._salesChannelService_.retrieve(data.id);
+      const sales_channel =
+        await this._salesChannelModuleService_.retrieveSalesChannel(data.id);
       if (!sales_channel) return { status: 400 };
 
       // Update entry in Strapi
@@ -749,35 +650,27 @@ export class UpdateMedusaService extends MedusaService({}) {
     categoryId: string,
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('product-categories', authInterface)
-			.then(() => true)
-			.catch(() => false);
-
-		if (!hasType) {
-			return Promise.resolve({
-				status: 400,
-			});
-		}*/
     try {
-      const category = await this._productCategoryService_.retrieve(categoryId);
+      const category =
+        await this._productModuleService_.retrieveProductCategory(categoryId);
+      if (!category) throw new Error("Invalid request, category not found!");
 
-      if (category) {
-        const categoryToSend = _.cloneDeep(category);
+      const categoryToSend = _.cloneDeep(category);
 
-        const result = await this.createEntryInStrapi({
-          type: "product-categories",
-          id: categoryId,
-          authInterface,
-          data: categoryToSend,
-          method: "POST",
-        });
-        return result;
-      }
+      const result = await this.createEntryInStrapi({
+        type: "product-categories",
+        id: categoryId,
+        authInterface,
+        data: categoryToSend,
+        method: "POST",
+      });
+      return result;
     } catch (error) {
       this.strapiPluginLog(
         "error",
         `unable to create category ${categoryId} ${error.message}`
       );
+      throw error;
     }
   }
 
@@ -786,27 +679,29 @@ export class UpdateMedusaService extends MedusaService({}) {
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
     try {
-      const salesChannel = await this._salesChannelService_.retrieve(
-        salesChannelId
-      );
+      const salesChannel =
+        await this._salesChannelModuleService_.retrieveSalesChannel(
+          salesChannelId
+        );
+      if (!salesChannel)
+        throw new Error("Invalid request, sales channel not found!");
 
-      if (salesChannel) {
-        const salesChannelToSend = _.cloneDeep(salesChannel);
+      const salesChannelToSend = _.cloneDeep(salesChannel);
 
-        const result = await this.createEntryInStrapi({
-          type: "sales-channels",
-          id: salesChannelId,
-          authInterface,
-          data: salesChannelToSend,
-          method: "POST",
-        });
-        return result;
-      }
+      const result = await this.createEntryInStrapi({
+        type: "sales-channels",
+        id: salesChannelId,
+        authInterface,
+        data: salesChannelToSend,
+        method: "POST",
+      });
+      return result;
     } catch (error) {
       this.strapiPluginLog(
         "error",
         `unable to create sales channel ${salesChannelId} ${error.message}`
       );
+      throw error;
     }
   }
 
@@ -814,45 +709,29 @@ export class UpdateMedusaService extends MedusaService({}) {
     variantId,
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('product-variants', authInterface)
-			.then(() => true)
-			.catch(() => false);
-
-		if (!hasType) {
-			return Promise.resolve({
-				status: 400,
-			});
-		}*/
-
-    // eslint-disable-next-line no-useless-catch
     try {
-      const variant = await this._productVariantService_.retrieve(variantId, {
-        relations: ["prices", "options", "product"],
+      const variant = await this._productModuleService_.retrieveProductVariant(
+        variantId,
+        { relations: ["prices", "options", "product"] }
+      );
+      if (!variant)
+        throw new Error("Invalid request, not able to find variant!");
+
+      const variantToSend: any = _.cloneDeep(variant);
+      variantToSend["money_amount"] = _.cloneDeep(variantToSend.prices);
+      delete variantToSend.prices;
+
+      variantToSend["product_option_value"] = _.cloneDeep(
+        variantToSend.options
+      );
+
+      return await this.createEntryInStrapi({
+        type: "product-variants",
+        id: variantId,
+        authInterface,
+        data: variantToSend,
+        method: "POST",
       });
-
-      // this.strapiPluginLog("info",variant)
-      if (variant) {
-        const variantToSend = _.cloneDeep(variant);
-        variantToSend["money_amount"] = _.cloneDeep(variantToSend.prices);
-        delete variantToSend.prices;
-
-        /* const variantOptionValues = variantToSend.options;
-				 for (const variantOption of variantOptionValues) {
-					this.convertOptionValueToMedusaReference(variantOption);
-				}*/
-
-        variantToSend["product_option_value"] = _.cloneDeep(
-          variantToSend.options
-        );
-
-        return await this.createEntryInStrapi({
-          type: "product-variants",
-          id: variantId,
-          authInterface,
-          data: variantToSend,
-          method: "POST",
-        });
-      }
     } catch (error) {
       throw error;
     }
@@ -878,22 +757,11 @@ export class UpdateMedusaService extends MedusaService({}) {
     regionId,
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('regions', authInterface)
-			.then(() => true)
-			.catch(() => false);
-		if (!hasType) {
-			this.strapiPluginLog('info', 'Type "Regions" doesnt exist in Strapi');
-			return { status: 400 };
-		}*/
-
-    // eslint-disable-next-line no-useless-catch
     try {
-      const region = await this._regionService_.retrieve(regionId, {
+      const region = await this._regionModuleService_.retrieveRegion(regionId, {
         relations: ["payment_providers", "fulfillment_providers", "currency"],
         select: ["id", "name", "tax_rate", "tax_code", "metadata"],
       });
-
-      // this.strapiPluginLog("info",region)
 
       return await this.createEntryInStrapi({
         type: "regions",
@@ -911,19 +779,6 @@ export class UpdateMedusaService extends MedusaService({}) {
     data,
     authInterface: AuthInterface = this.defaultAuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('regions', authInterface)
-			.then(() => {
-				// this.strapiPluginLog("info",res.data)
-				return true;
-			})
-			.catch(() => {
-				// this.strapiPluginLog("info",error.response.status)
-				return false;
-			});
-		if (!hasType) {
-			return { status: 400 };
-		}
-		*/
     const updateFields = [
       "name",
       "currency_code",
@@ -934,9 +789,7 @@ export class UpdateMedusaService extends MedusaService({}) {
 
     // check if update contains any fields in Strapi to minimize runs
     const found = this.verifyDataContainsFields(data, updateFields);
-    if (!found) {
-      return { status: 400 };
-    }
+    if (!found) return { status: 400 };
 
     // eslint-disable-next-line no-useless-catch
     try {
@@ -945,7 +798,7 @@ export class UpdateMedusaService extends MedusaService({}) {
         return { status: 400 };
       }
 
-      const region = await this._regionService_.retrieve(data.id, {
+      const region = await this._regionModuleService_.retrieveRegion(data.id, {
         relations: [
           "countries",
           "payment_providers",
@@ -956,19 +809,17 @@ export class UpdateMedusaService extends MedusaService({}) {
       });
       // this.strapiPluginLog("info",region)
 
-      if (region) {
-        // Update entry in Strapi
-        const response = await this.updateEntryInStrapi({
-          type: "regions",
-          id: region.id,
-          authInterface,
-          data: { ...region, ...data },
-        });
-        this.strapiPluginLog("info", "Region Strapi Id - ", response);
-        return response;
-      } else {
-        return { status: 400 };
-      }
+      if (!region) return { status: 400 };
+
+      // Update entry in Strapi
+      const response = await this.updateEntryInStrapi({
+        type: "regions",
+        id: region.id,
+        authInterface,
+        data: { ...region, ...data },
+      });
+      this.strapiPluginLog("info", "Region Strapi Id - ", response);
+      return response;
     } catch (error) {
       return { status: 400 };
     }
@@ -992,8 +843,10 @@ export class UpdateMedusaService extends MedusaService({}) {
       return { status: 400 };
     }
 
-    const productInfo = await this._productService_.retrieve(data.id);
-    const dataToInsert: BaseEntity = {
+    const productInfo = await this._productModuleService_.retrieveProduct(
+      data.id
+    );
+    const dataToInsert: Partial<ProductDTO> = {
       ..._.cloneDeep(data),
       created_at: productInfo.created_at,
       updated_at: productInfo.updated_at,
@@ -1016,12 +869,14 @@ export class UpdateMedusaService extends MedusaService({}) {
       "product-metafields",
       authInterface
     );
-    if (!typeExists) {
-      return { status: 400 };
-    }
+    if (!typeExists) return { status: 400 };
 
-    const productInfo = await this._productService_.retrieve(data.id);
-    const dataToUpdate: BaseEntity & { medusa_id: string } = {
+    const productInfo = await this._productModuleService_.retrieveProduct(
+      data.id
+    );
+    if (!productInfo) throw new Error("Invalid request, product not found!");
+
+    const dataToUpdate: Partial<ProductDTO> & { medusa_id: string } = {
       ..._.cloneDeep(data),
       created_at: productInfo.created_at,
       updated_at: productInfo.updated_at,
@@ -1041,22 +896,11 @@ export class UpdateMedusaService extends MedusaService({}) {
     data,
     authInterface: AuthInterface = this.defaultAuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('products', authInterface)
-			.then(() => {
-				return true;
-			})
-			.catch(() => {
-				return false;
-			});
-		if (!hasType) {
-			return { status: 400 };
-		}
-		*/
     const updateFields = ["productIds", "productCollection"];
 
-    if (!this.verifyDataContainsFields(data, updateFields)) {
+    if (!this.verifyDataContainsFields(data, updateFields))
       return { status: 400 };
-    }
+
     try {
       for (const productId of data.productIds) {
         const ignore = await this.shouldIgnore_(productId, "strapi");
@@ -1068,20 +912,19 @@ export class UpdateMedusaService extends MedusaService({}) {
           continue;
         }
 
-        const product = await this._productService_.retrieve(productId, {
-          relations: ["collection"],
-          select: ["id"],
-        });
+        const product = await this._productModuleService_.retrieveProduct(
+          productId,
+          {
+            relations: ["collection"],
+            select: ["id"],
+          }
+        );
+        if (!product) continue;
 
-        if (product) {
-          // we're sending requests sequentially as the Strapi is having problems with deadlocks otherwise
-          await this.adjustProductAndUpdateInStrapi(
-            product,
-            data,
-            authInterface
-          );
-        }
+        // we're sending requests sequentially as the Strapi is having problems with deadlocks otherwise
+        await this.adjustProductAndUpdateInStrapi(product, data, authInterface);
       }
+
       return { status: 200 };
     } catch (error) {
       this.strapiPluginLog(
@@ -1097,23 +940,11 @@ export class UpdateMedusaService extends MedusaService({}) {
     data,
     authInterface: AuthInterface = this.defaultAuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('products', authInterface)
-			.then(() => {
-				return true;
-			})
-			.catch(() => {
-				return false;
-			});
-		if (!hasType) {
-			return { status: 400 };
-		}
-		*/
-
     const updateFields = ["productIds", "productCategories"];
 
-    if (!this.verifyDataContainsFields(data, updateFields)) {
+    if (!this.verifyDataContainsFields(data, updateFields))
       return { status: 400 };
-    }
+
     try {
       for (const productId of data.productIds) {
         const ignore = await this.shouldIgnore_(productId, "strapi");
@@ -1125,19 +956,13 @@ export class UpdateMedusaService extends MedusaService({}) {
           continue;
         }
 
-        const product = await this._productService_.retrieve(productId, {
-          relations: ["category"],
-          select: ["id"],
-        });
-
-        if (product) {
-          // we're sending requests sequentially as the Strapi is having problems with deadlocks otherwise
-          await this.adjustProductAndUpdateInStrapi(
-            product,
-            data,
-            authInterface
-          );
-        }
+        const product = await this._productModuleService_.retrieveProduct(
+          productId,
+          { relations: ["category"], select: ["id"] }
+        );
+        if (!product) continue;
+        // we're sending requests sequentially as the Strapi is having problems with deadlocks otherwise
+        await this.adjustProductAndUpdateInStrapi(product, data, authInterface);
       }
       return { status: 200 };
     } catch (error) {
@@ -1148,27 +973,12 @@ export class UpdateMedusaService extends MedusaService({}) {
       );
       throw error;
     }
-    return { status: 400 };
   }
 
   async updateProductInStrapi(
-    data: Partial<Product>,
+    data: Partial<ProductDTO>,
     authInterface: AuthInterface = this.defaultAuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('products', authInterface)
-			.then(() => {
-				// this.strapiPluginLog("info",res.data)
-				return true;
-			})
-			.catch(() => {
-				// this.strapiPluginLog("info",error.response.status)
-				return false;
-			});
-		if (!hasType) {
-			return { status: 400 };
-		}
-		*/
-    // this.strapiPluginLog("info",data)
     const updateFields = [
       "variants",
       "options",
@@ -1190,9 +1000,7 @@ export class UpdateMedusaService extends MedusaService({}) {
 
     // check if update contains any fields in Strapi to minimize runs
     const found = this.verifyDataContainsFields(data, updateFields);
-    if (!found) {
-      return { status: 400 };
-    }
+    if (!found) return { status: 400 };
 
     // eslint-disable-next-line no-useless-catch
     try {
@@ -1205,8 +1013,10 @@ export class UpdateMedusaService extends MedusaService({}) {
         );
         return { status: 400 };
       }
-      try {
-        const product = await this._productService_.retrieve(data.id, {
+
+      const product = await this._productModuleService_.retrieveProduct(
+        data.id as string,
+        {
           relations: [
             "options",
             "variants",
@@ -1218,61 +1028,38 @@ export class UpdateMedusaService extends MedusaService({}) {
             "tags",
             "images",
           ],
-        });
-
-        if (product) {
-          try {
-            const updateRes = await this.adjustProductAndUpdateInStrapi(
-              product,
-              data,
-              authInterface
-            );
-            if (updateRes.status == 200) return updateRes;
-
-            await this.createProductInStrapi(data.id, authInterface);
-            const updateAfterCreateRes =
-              await this.adjustProductAndUpdateInStrapi(
-                product,
-                data,
-                authInterface
-              );
-            return updateAfterCreateRes;
-          } catch (e) {
-            this.strapiPluginLog(
-              "error",
-              "unable to update product",
-              e.message
-            );
-            return { status: 400 };
-          }
-        } else {
-          try {
-            console.log(
-              "update failed as product doesn't exist, creating product instead"
-            );
-            return await this.createProductInStrapi(data.id, authInterface);
-          } catch (f) {
-            return { status: 400 };
-          }
         }
-      } catch (e) {
-        try {
-          console.log(
-            "update failed as product doesn't exist, creating product instead"
-          );
-          return await this.createProductInStrapi(data.id, authInterface);
-        } catch (f) {
-          return { status: 400 };
-        }
+      );
+
+      if (!product) {
+        console.log(
+          "update failed as product doesn't exist, creating product instead"
+        );
+        return await this.createProductInStrapi(data.id, authInterface);
       }
+
+      const updateRes = await this.adjustProductAndUpdateInStrapi(
+        product,
+        data,
+        authInterface
+      );
+      if (updateRes.status == 200) return updateRes;
+
+      await this.createProductInStrapi(data.id, authInterface);
+      const updateAfterCreateRes = await this.adjustProductAndUpdateInStrapi(
+        product,
+        data,
+        authInterface
+      );
+      return updateAfterCreateRes;
     } catch (error) {
       throw error;
     }
   }
 
   private async adjustProductAndUpdateInStrapi(
-    product: Product,
-    data: Partial<Product>,
+    product: ProductDTO,
+    data: Partial<ProductDTO>,
     authInterface: AuthInterface
   ) {
     // Medusa is not using consistent naming for product-*.
@@ -1310,8 +1097,7 @@ export class UpdateMedusaService extends MedusaService({}) {
       result = await this.getType(type, authInterface);
     } catch (error) {
       this.strapiPluginLog("error", `${type} type not found in strapi`);
-      this.strapiPluginLog("error", JSON.stringify(error));
-      result = undefined;
+      return false;
     }
     return result ? true : false;
   }
@@ -1339,76 +1125,49 @@ export class UpdateMedusaService extends MedusaService({}) {
       const found =
         data.fields.find((f) => updateFields.includes(f)) ||
         this.verifyDataContainsFields(data, updateFields);
-      if (!found) {
-        return { status: 400 };
-      }
+      if (!found) return { status: 400 };
     }
+
+    let variant;
+    const ignore = await this.shouldIgnore_(data.id, "strapi");
+    if (ignore) return { status: 400 };
 
     try {
-      let variant;
-      const ignore = await this.shouldIgnore_(data.id, "strapi");
-      if (ignore) {
-        return { status: 400 };
-      }
-      try {
-        variant = await this._productVariantService_.retrieve(data.id, {
-          relations: ["prices", "options"],
-        });
-        this.strapiPluginLog("info", JSON.stringify(variant));
-        try {
-          if (variant) {
-            // Update entry in Strapi
+      variant = await this._productModuleService_.retrieveProduct(data.id, {
+        relations: ["prices", "options"],
+      });
+      this.strapiPluginLog("info", JSON.stringify(variant));
+      if (!variant) throw new Error("Invalid request, variant not found!");
 
-            response = await this.updateEntryInStrapi({
-              type: "product-variants",
-              id: variant.id,
-              authInterface,
-              data: { ...variant, ...data },
-              method: "put",
-              query: data.query,
-            });
-            this.strapiPluginLog("info", "Variant Strapi Id - ", response);
-            return response;
-          }
-        } catch (e) {
-          this.strapiPluginLog("info", JSON.stringify(variant));
-        }
-      } catch (e) {
-        if (!variant) {
-          response = await this.createProductVariantInStrapi(
-            data.id,
-            authInterface
-          );
-          this.strapiPluginLog(
-            "info",
-            "Created Variant Strapi Id - ",
-            response
-          );
-          return response;
-        }
-      }
+      // Update entry in Strapi
+
+      response = await this.updateEntryInStrapi({
+        type: "product-variants",
+        id: variant.id,
+        authInterface,
+        data: { ...variant, ...data },
+        method: "put",
+        query: data.query,
+      });
+      this.strapiPluginLog("info", "Variant Strapi Id - ", response);
       return response;
-    } catch (error) {
-      this.strapiPluginLog("info", "Failed to update product variant", data.id);
-      return { status: 400 };
+    } catch (e) {
+      if (!variant) {
+        response = await this.createProductVariantInStrapi(
+          data.id,
+          authInterface
+        );
+        this.strapiPluginLog("info", "Created Variant Strapi Id - ", response);
+        return response;
+      }
     }
+    return response;
   }
 
   async deleteProductMetafieldInStrapi(
     data: { id: string },
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('product-metafields', authInterface)
-			.then(() => true)
-			.catch((err) => {
-				this.strapiPluginLog('info', err);
-				return false;
-			});
-		if (!hasType) {
-			return Promise.resolve({
-				status: 400,
-			});
-		}*/
     const ignore = await this.shouldIgnore_(data.id, "strapi");
     if (ignore) {
       return { status: 400 };
@@ -1426,22 +1185,8 @@ export class UpdateMedusaService extends MedusaService({}) {
     data,
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('products', authInterface)
-			.then(() => true)
-			.catch((err) => {
-				this.strapiPluginLog('info', err);
-				return false;
-			});
-		if (!hasType) {
-			return Promise.resolve({
-				status: 400,
-			});
-		}
-		*/
     const ignore = await this.shouldIgnore_(data.id, "strapi");
-    if (ignore) {
-      return { status: 400 };
-    }
+    if (ignore) return { status: 400 };
 
     return await this.deleteEntryInStrapi({
       type: "products",
@@ -1455,20 +1200,8 @@ export class UpdateMedusaService extends MedusaService({}) {
     data,
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('product-types', authInterface)
-			.then(() => true)
-			.catch((err) => {
-				this.strapiPluginLog('info', err);
-				return false;
-			});
-		if (!hasType) {
-			return { status: 400 };
-		}*/
-
     const ignore = await this.shouldIgnore_(data.id, "strapi");
-    if (ignore) {
-      return { status: 400 };
-    }
+    if (ignore) return { status: 400 };
 
     return await this.deleteEntryInStrapi({
       type: "product-types",
@@ -1482,20 +1215,8 @@ export class UpdateMedusaService extends MedusaService({}) {
     data,
     authInterface: AuthInterface
   ): Promise<StrapiResult> {
-    /*const hasType = this.getType('product-variants', authInterface)
-			.then(() => true)
-			.catch(() => {
-				// this.strapiPluginLog("info",err)
-				return false;
-			});
-		if (!hasType) {
-			return { status: 400 };
-		}*/
-
     const ignore = await this.shouldIgnore_(data.id, "strapi");
-    if (ignore) {
-      return { status: 400 };
-    }
+    if (ignore) return { status: 400 };
 
     return await this.deleteEntryInStrapi({
       type: "product-variants",
@@ -1507,20 +1228,8 @@ export class UpdateMedusaService extends MedusaService({}) {
 
   // Blocker - Delete Region API
   async deleteRegionInStrapi(data, authInterface): Promise<StrapiResult> {
-    /*const hasType = this.getType('regions', authInterface)
-			.then(() => true)
-			.catch(() => {
-				// this.strapiPluginLog("info",err)
-				return false;
-			});
-		if (!hasType) {
-			return { status: 400 };
-		}*/
-
     const ignore = await this.shouldIgnore_(data.id, "strapi");
-    if (ignore) {
-      return { status: 400 };
-    }
+    if (ignore) return { status: 400 };
 
     return await this.deleteEntryInStrapi({
       type: "regions",
@@ -1533,9 +1242,7 @@ export class UpdateMedusaService extends MedusaService({}) {
   // Blocker - Create Sales Channel API
   async deleteSalesChannelInStrapi(data, authInterface): Promise<StrapiResult> {
     const ignore = await this.shouldIgnore_(data.id, "strapi");
-    if (ignore) {
-      return { status: 400 };
-    }
+    if (ignore) return { status: 400 };
 
     return await this.deleteEntryInStrapi({
       type: "sales-channels",
@@ -1546,20 +1253,8 @@ export class UpdateMedusaService extends MedusaService({}) {
   }
 
   async deleteCollectionInStrapi(data, authInterface): Promise<StrapiResult> {
-    /*const hasType = this.getType('product-collections', authInterface)
-			.then(() => true)
-			.catch(() => {
-				// this.strapiPluginLog("info",err)
-				return false;
-			});
-		if (!hasType) {
-			return { status: 400 };
-		}*/
-
     const ignore = await this.shouldIgnore_(data.id, "strapi");
-    if (ignore) {
-      return { status: 400 };
-    }
+    if (ignore) return { status: 400 };
 
     return await this.deleteEntryInStrapi({
       type: "product-collections",
@@ -1569,20 +1264,8 @@ export class UpdateMedusaService extends MedusaService({}) {
     });
   }
   async deleteCategoryInStrapi(data, authInterface): Promise<StrapiResult> {
-    /*const hasType = this.getType('product-categories', authInterface)
-			.then(() => true)
-			.catch(() => {
-				// this.strapiPluginLog("info",err)
-				return false;
-			});
-		if (!hasType) {
-			return { status: 400 };
-		}*/
-
     const ignore = await this.shouldIgnore_(data.id, "strapi");
-    if (ignore) {
-      return { status: 400 };
-    }
+    if (ignore) return { status: 400 };
 
     return await this.deleteEntryInStrapi({
       type: "product-categories",
@@ -1601,6 +1284,7 @@ export class UpdateMedusaService extends MedusaService({}) {
       type,
       authInterface,
     });
+
     return result;
   }
 
@@ -1617,7 +1301,7 @@ export class UpdateMedusaService extends MedusaService({}) {
     this.strapiPluginLog("debug", `check-url: ${config.url} `);
 
     try {
-      let response = undefined;
+      let response: Awaited<ReturnType<typeof axios.head>> = undefined;
       let timeOut = this.options_.strapi_healthcheck_timeout ?? 120e3;
       while (timeOut-- > 0) {
         try {
@@ -1625,26 +1309,24 @@ export class UpdateMedusaService extends MedusaService({}) {
         } catch (e) {
           this.strapiPluginLog("error", `health check error ${e.message}`);
         }
-        if (response && response?.status) {
-          break;
-        }
+        if (response && response?.["status"]) break;
+
         this.strapiPluginLog(
           "error",
-          `response from the server: ${response?.status ?? "no-response"}`
+          `response from the server: ${response?.["status"] ?? "no-response"}`
         );
         await sleep(3000);
       }
       UpdateStrapiService.lastHealthCheckTime = Date.now();
-      if (response) {
-        UpdateStrapiService.isHealthy = response.status < 300 ? true : false;
-        if (UpdateStrapiService.isHealthy) {
-          this.strapiPluginLog("info", "Strapi is healthy");
-        } else {
-          this.strapiPluginLog("info", "Strapi is unhealthy");
-        }
-      } else {
+      if (!response) {
         UpdateStrapiService.isHealthy = false;
+        return UpdateMedusaService.isHealthy;
       }
+
+      UpdateStrapiService.isHealthy = response?.["status"] < 300 ? true : false;
+      if (UpdateStrapiService.isHealthy)
+        this.strapiPluginLog("info", "Strapi is healthy");
+      else this.strapiPluginLog("info", "Strapi is unhealthy");
 
       return UpdateStrapiService.isHealthy;
     } catch (error) {
@@ -1668,9 +1350,8 @@ export class UpdateMedusaService extends MedusaService({}) {
       this.strapiSuperAdminAuthToken = undefined;
     }
 
-    if (process.env.NODE_ENV == "test" && this.selfTestMode) {
-      return true;
-    }
+    if (process.env.NODE_ENV == "test" && this.selfTestMode) return true;
+
     const result =
       intervalElapsed || !UpdateStrapiService.isHealthy
         ? await this.executeStrapiHealthCheck()
@@ -1712,6 +1393,7 @@ export class UpdateMedusaService extends MedusaService({}) {
       this.strapiPluginLog("error", "unable to register default user", {
         error: (error as Error).message,
       });
+      throw error;
     }
   }
   /**
@@ -1725,13 +1407,14 @@ export class UpdateMedusaService extends MedusaService({}) {
         this.defaultAuthInterface
       );
 
-      delete this.userTokens[this.defaultAuthInterface.email];
+      delete this.userTokens[this.defaultAuthInterface.email as string];
       return response;
     } catch (error) {
       this.strapiPluginLog(
         "error",
         "unable to delete default user: " + (error as Error).message
       );
+      throw error;
     }
   }
 
@@ -1757,7 +1440,7 @@ export class UpdateMedusaService extends MedusaService({}) {
     const result = await this.executeStrapiSend({
       method: "delete",
       type: "users",
-      token: this.userTokens[authInterface.email].token,
+      token: this.userTokens[authInterface.email as string].token,
       id: fetchedUser.id?.toString(),
     });
     return { data: result.data.data ?? result.data, status: result.status };
@@ -1779,9 +1462,7 @@ export class UpdateMedusaService extends MedusaService({}) {
         `${this.strapi_url}/strapi-plugin-medusajs/synchronise-medusa-tables`,
         {},
         {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
+          headers: { Authorization: `Bearer ${token}` },
           timeout: 3600e3 /** temp workaround to stop retransmissions over 900ms*/,
         }
       );
@@ -1799,6 +1480,7 @@ export class UpdateMedusaService extends MedusaService({}) {
         undefined,
         `${this.strapi_url}/strapi-plugin-medusajs/synchronise-medusa-tables`
       );
+      throw error;
     }
   }
 
@@ -1830,12 +1512,14 @@ export class UpdateMedusaService extends MedusaService({}) {
     errorCode?: string | number
   ) {
     const { email } = authInterface;
+    if (!email)
+      throw new Error("Invalid request, email not found in authInterface!");
+
     const currentTime = Date.now();
     const lastRetrived = this.userTokens[email.toLowerCase()];
     if (lastRetrived && errorCode != "401") {
-      if (!strapiRetryDelay) {
-        strapiRetryDelay = 180e3;
-      }
+      if (!strapiRetryDelay) strapiRetryDelay = 180e3;
+
       const diff =
         Math.floor(currentTime / 1000) -
         Math.floor((lastRetrived.time ?? 0) / 1000);
@@ -1846,24 +1530,26 @@ export class UpdateMedusaService extends MedusaService({}) {
     }
     try {
       const res = await this.executeLoginAsStrapiUser(authInterface);
-      if (res?.data.jwt) {
-        this.userTokens[email.toLowerCase()] = {
-          token: res.data.jwt /** caching the jwt token */,
-          time: Date.now(),
-          user: res.data.user,
-        };
-        this.strapiPluginLog(
-          "info",
-          `${email} ` + "successfully logged in to Strapi"
-        );
-        return this.userTokens[email.toLowerCase()];
-      }
+      if (!res.data?.jwt)
+        throw new Error("Invalid request, jwt token not found!");
+
+      this.userTokens[email.toLowerCase()] = {
+        token: res.data.jwt /** caching the jwt token */,
+        time: Date.now(),
+        user: res.data.user,
+      };
+      this.strapiPluginLog(
+        "info",
+        `${email} ` + "successfully logged in to Strapi"
+      );
+      return this.userTokens[email.toLowerCase()];
     } catch (error) {
       this.strapiPluginLog(
         "error",
         `${email} ` + "error logging in in to Strapi"
       );
       this._axiosError(error);
+      throw error;
     }
   }
 
@@ -1873,10 +1559,13 @@ export class UpdateMedusaService extends MedusaService({}) {
       password: this.defaultUserPassword,
     }
   ): Promise<UserCreds> {
-    const refreshedCredentials = await this.retrieveRefreshedToken(
-      authInterface
-    );
-    return refreshedCredentials;
+    const creds = await this.retrieveRefreshedToken(authInterface);
+    if (!creds)
+      throw new Error(
+        "Invalid request, something went wrong while refreshing the token!"
+      );
+
+    return creds;
   }
 
   async executeLoginAsStrapiUser(
@@ -1889,7 +1578,7 @@ export class UpdateMedusaService extends MedusaService({}) {
     await this.waitForServiceAccountCreation();
     try {
       const authData = {
-        identifier: authInterface.email.toLowerCase(),
+        identifier: authInterface.email?.toLowerCase(),
         password: authInterface.password,
       };
       this.strapiPluginLog("info", `firing: ${this.strapi_url}/api/auth/local`);
@@ -1897,27 +1586,7 @@ export class UpdateMedusaService extends MedusaService({}) {
         `${this.strapi_url}/api/auth/local`,
         authData
       );
-      // } catch (e) {
-      /* if (e.response.status == 429) {
-					let i = 0;
-					let timeOut: NodeJS.Timeout;
-					while (i++ < 60000) {
-						if (timeOut) {
-							clearTimeout(timeOut);
-							this.strapiPluginLog("info",
-								`429 recieved backing off  seconds: ${timeOut} remaining`
-							);
-						}
-						timeOut = setTimeout(async () => {
-							res = await axios.post(
-								`${this.strapi_url}/api/auth/local`,
-								authData
-							);
-						}, 60000 - i);
-					}
-				}*/
-      // }
-      // console.log("login result"+res);
+
       return response;
     } catch (error) {
       this._axiosError(
@@ -1933,23 +1602,17 @@ export class UpdateMedusaService extends MedusaService({}) {
           (error as Error).message
       );
     }
-
-    return;
   }
   async getRoleId(requestedRole: string): Promise<number> {
     const response = await this.executeStrapiAdminSend("get", "roles");
     let idToReturn = -1;
     // console.log("role:", response);
     if (response) {
-      const availableRoles = response.data.data as role[];
+      const availableRoles = response.data.data;
       const theRole = availableRoles?.filter(
         (role) => role.name == requestedRole
       );
-      /*for (const role of availableRoles) {
-				if (role.name == requestedRole) {
-					return role.id;
-				}
-			}*/
+
       idToReturn = theRole?.[0]?.id ?? -1;
     }
     return idToReturn;
@@ -2027,14 +1690,6 @@ export class UpdateMedusaService extends MedusaService({}) {
 
   async updateEntryInStrapi(command: StrapiSendParams): Promise<StrapiResult> {
     try {
-      const result = await this.getEntriesInStrapi({
-        type: command.type,
-        method: "get",
-        id: command.data.id,
-        data: undefined,
-        authInterface: command.authInterface,
-        query: command.query,
-      });
       const putResult = await this.processStrapiEntry({
         ...command,
         method: "put",
@@ -2042,12 +1697,12 @@ export class UpdateMedusaService extends MedusaService({}) {
         query: undefined,
       });
       return putResult;
-    } catch (e) {
+    } catch (err) {
       this.strapiPluginLog(
         "error",
-        `entity doesn't exist in strapi :${e.message} : ${command.id}` +
-          " , update not possible"
+        `entity doesn't exist in strapi :${err.message} : ${command.id} , update not possible!`
       );
+      throw err;
     }
   }
 
@@ -2097,18 +1752,12 @@ export class UpdateMedusaService extends MedusaService({}) {
   ): StrapiGetResult {
     let testObject = null;
 
-    if (_.isArray(dataReceived[key])) {
-      if (dataReceived[key].length > 0) {
-        testObject = dataReceived[key][0];
-      }
-    } else {
-      testObject = dataReceived[key];
-    }
+    if (_.isArray(dataReceived[key]) && dataReceived[key].length > 0)
+      testObject = dataReceived[key][0];
+    else testObject = dataReceived[key];
 
     // if the object is a not empty array or object without id or medusa_id, it's not relation
-    if (testObject && !this.isEntity(testObject)) {
-      return dataReceived;
-    }
+    if (testObject && !this.isEntity(testObject)) return dataReceived;
 
     if (key.includes("_") && key != "meudsa_id") {
       dataReceived[key.replace("_", "-")] = dataReceived[key];
@@ -2186,13 +1835,11 @@ export class UpdateMedusaService extends MedusaService({}) {
       this.strapiPluginLog("error", `no such user:${authInterface.email}`);
       return { status: 400 };
     }
-    let dataToSend: BaseEntity & { medusa_id?: string };
+    let dataToSend: StrapiEntity;
     if (data && data.id) {
       dataToSend = _.cloneDeep(data);
       dataToSend = this.translateDataToStrapiFormat(dataToSend);
-    } else {
-      dataToSend = data;
-    }
+    } else dataToSend = data;
 
     try {
       const result = await this.executeStrapiSend({
@@ -2215,24 +1862,21 @@ export class UpdateMedusaService extends MedusaService({}) {
         await this.retrieveRefreshedToken(authInterface, "401");
         return await this.strapiSendDataLayer(params);
       }
+
       if (e instanceof AxiosError) {
-        if (method.toLowerCase() == "get" && e.response.status == 404) {
+        if (method?.toLowerCase() == "get" && e.response?.status == 404) {
           this.strapiPluginLog(
             "error",
-            `unable to find ${type} id: ${id ?? ""} query:${
-              query ?? ""
-            } message: ${e.message}`,
+            `unable to find ${type} id: ${id} query:${query} message: ${e.message}`,
             params
           );
           return {
-            id: undefined,
-            medusa_id: undefined,
             status: e.response.status,
-            data: undefined,
             query,
           };
         } else {
           this._axiosError(e, id, type, data, method);
+          throw e;
         }
       }
 
@@ -2267,61 +1911,48 @@ export class UpdateMedusaService extends MedusaService({}) {
     data,
     query,
   }: {
-    method: Method;
+    method: Method | undefined;
     type: string;
     token: string;
     id?: string;
     data?: any;
     query?: string;
   }): Promise<AxiosResponse> {
-    let endPoint: string = undefined;
+    let endPoint: string;
     await this.waitForHealth();
     await this.waitForServiceAccountCreation();
     let tail = "";
     //	if (method.toLowerCase() != 'post') {
-    if (method.toLowerCase() != "post") {
+    if (!method || method.toLowerCase() != "post") {
       if (
         id &&
         id != "" &&
-        id?.trim().toLocaleLowerCase() != "me" &&
+        id.trim().toLocaleLowerCase() != "me" &&
         type.toLowerCase() != "users" &&
-        method.toLowerCase() == "get"
-      ) {
+        (!method || method.toLowerCase() == "get") &&
+        query
+      )
         tail = `?${this.appendIdToStrapiFilter(query, id)}`;
-      } else {
-        tail = id ? `/${id}` : "";
-      }
+      else tail = id ? `/${id}` : "";
+
       if (tail == "" && query) tail = `?${query}`;
     }
-    //	}
     endPoint = `${this.strapi_url}/api/${type}${tail}`;
-    /*} else {
-			endPoint = `${this.strapi_url}/api/${type}`;
-		}*/
+
     this.strapiPluginLog("info", `User endpoint: ${endPoint}`);
     const basicConfig = {
       method: method,
       url: endPoint,
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { Authorization: `Bearer ${token}` },
     };
     this.strapiPluginLog("info", `${basicConfig.method} ${basicConfig.url}`);
-    const config = data
-      ? {
-          ...basicConfig,
-          data,
-        }
-      : {
-          ...basicConfig,
-        };
+    const config = data ? { ...basicConfig, data } : { ...basicConfig };
 
     try {
       this.strapiPluginLog(
         "debug",
         `User Endpoint firing: ${endPoint} method: ${method} query:${query}`
       );
-      console.log(config);
       const result = await axios(config);
       this.strapiPluginLog(
         "debug",
@@ -2341,6 +1972,7 @@ export class UpdateMedusaService extends MedusaService({}) {
       return result;
     } catch (error) {
       this._axiosError(error, id, type, data, method, endPoint);
+      throw error;
     }
   }
   appendIdToStrapiFilter(query: string, id?: string): string {
@@ -2361,6 +1993,7 @@ export class UpdateMedusaService extends MedusaService({}) {
     urlQuery.filters = newFilters;
     return qs.stringify(urlQuery);
   }
+
   _axiosError(
     error: AxiosError,
     id?: string,
@@ -2386,7 +2019,6 @@ export class UpdateMedusaService extends MedusaService({}) {
               method,
               time: new Date(),
             });
-            break;
 
           default:
             throw error;
@@ -2396,16 +2028,6 @@ export class UpdateMedusaService extends MedusaService({}) {
       if (e instanceof LoginTokenExpiredError) throw e;
       else this.handleError(error, id, type, data, method, endPoint);
     }
-  }
-  async refreshResend(
-    error: any,
-    id: string,
-    type: string,
-    data: any,
-    method: string,
-    endPoint: string
-  ) {
-    const credentials = await this.strapiLoginSendDatalayer();
   }
 
   handleError(
@@ -2447,7 +2069,7 @@ export class UpdateMedusaService extends MedusaService({}) {
     }
   }
   async executeStrapiAdminSend(
-    method: Method,
+    method: Method | undefined,
     type: string,
     id?: string,
     action?: string,
@@ -2463,7 +2085,7 @@ export class UpdateMedusaService extends MedusaService({}) {
       return;
     }
 
-    let headers = undefined;
+    let headers: axios.AxiosRequestConfig["headers"] = undefined;
     /** refreshed token */
     this.strapiSuperAdminAuthToken = result.data.token;
     if (this.strapiSuperAdminAuthToken) {
@@ -2472,56 +2094,44 @@ export class UpdateMedusaService extends MedusaService({}) {
         "Content-type": "application/json",
       };
     }
-    const path = [];
-    const items = [type, action, id];
-    for (const item of items) {
-      if (item) {
-        path.push(item);
-      }
-    }
+    const path = [type, action, id].filter((itm) => !!itm);
     const q = query ? `?${query}` : "";
     const finalUrl = `${this.strapi_url}/admin/${path.join("/")}${q}`;
-    const basicConfig = {
+    const basicConfig: axios.AxiosRequestConfig = {
       method: method,
       url: finalUrl,
       headers,
     };
     this.strapiPluginLog("info", `Admin Endpoint fired: ${basicConfig.url}`);
-    const config = data
-      ? {
-          ...basicConfig,
-          data,
-        }
-      : {
-          ...basicConfig,
-        };
+    const config = data ? { ...basicConfig, data } : { ...basicConfig };
     try {
       const result = await axios(config);
-      if (result.status >= 200 && result.status < 300) {
-        if (this.enableAdminDataLogging && data?.password) {
-          data.password = "#####";
-        }
-        this.strapiPluginLog(
-          "debug",
-          `Strapi Ok : ${method}, ${id ?? ""}` +
-            `, ${type ?? ""}, ${
-              this.enableAdminDataLogging ? data ?? "" : ""
-            }, ${action ?? ""} :status:${result.status}`
-        );
-        this.strapiPluginLog(
-          "info",
-          `Strapi Data : ${JSON.stringify(result.data)}`
-        );
-      } else {
+      if (!(result.status >= 200 && result.status < 300)) {
         this.strapiPluginLog("info", "Admin endpoint error recieved", result);
+        return result;
       }
+
+      if (this.enableAdminDataLogging && data?.password)
+        data.password = "#####";
+
+      this.strapiPluginLog(
+        "debug",
+        `Strapi Ok : ${method}, ${id ?? ""}` +
+          `, ${type ?? ""}, ${this.enableAdminDataLogging ? data ?? "" : ""}, ${
+            action ?? ""
+          } :status:${result.status}`
+      );
+      this.strapiPluginLog(
+        "info",
+        `Strapi Data : ${JSON.stringify(result.data)}`
+      );
 
       return result;
     } catch (error) {
       //  this.strapiPluginLog("error",'Admin endpoint error');
-      if (this.enableAdminDataLogging && data?.password) {
+      if (this.enableAdminDataLogging && data?.password)
         data.password = "#####";
-      }
+
       this._axiosError(
         error,
         id,
@@ -2530,24 +2140,24 @@ export class UpdateMedusaService extends MedusaService({}) {
         method,
         basicConfig.url
       );
+      throw error;
     }
   }
 
   async executeRegisterMedusaUser(
     auth: MedusaUserType
   ): Promise<AxiosResponse | undefined> {
-    let response: AxiosResponse;
-
     try {
       await this.executeLoginAsStrapiSuperAdmin();
       if (!this.selfTestMode) await this.waitForHealth();
     } catch (e) {
       if (this.selfTestMode)
         this.strapiPluginLog("warn", "running in self testmode");
+      throw e;
     }
 
     try {
-      response = await axios.post(
+      const response = await axios.post(
         `${this.strapi_url}/strapi-plugin-medusajs/create-medusa-user`,
         auth,
         {
@@ -2557,12 +2167,13 @@ export class UpdateMedusaService extends MedusaService({}) {
           timeout: 3600e3 /** temp workaround to stop retransmissions over 900ms*/,
         }
       );
+
+      return response;
     } catch (e) {
       this.strapiPluginLog("error", "user registration error");
       this._axiosError(e);
+      throw e;
     }
-
-    return response;
   }
   /** *
    * send the command using elevated privileges
@@ -2581,7 +2192,7 @@ export class UpdateMedusaService extends MedusaService({}) {
         data,
         query
       );
-      return { data: result.data, status: result.status };
+      return { data: result?.data, status: result?.status ?? 400 };
     } catch (e) {
       this.strapiPluginLog("error", e.message);
       return { data: undefined, status: 400 };
@@ -2600,42 +2211,17 @@ export class UpdateMedusaService extends MedusaService({}) {
         undefined,
         auth
       );
+      if (!result)
+        throw new Error("Invalid request, strapi admin send request failed!");
+
       return result.data?.user;
-    } catch (e) {
+    } catch (err) {
       this.strapiPluginLog(
         "warn",
-        `unable to register super user,` +
-          ` super user may already registered, ${e.message}`
+        `unable to register super user, super user may already registered, ${err.message}`
       );
+      throw err;
     }
-  }
-  async registerAdminUserInStrapi(
-    email: string,
-    firstname: string,
-    password = passwordGen.generate({
-      length: 16,
-      numbers: true,
-      strict: true,
-    }),
-    role = "Author"
-  ): Promise<AdminResult> {
-    const roleId = await this.getRoleId(role);
-    const auth = {
-      email,
-      firstname,
-      // password,
-      // isActive: true,
-      roles: [roleId],
-    };
-
-    const result = await this.strapiAdminSendDatalayer({
-      method: "post",
-      type: "users",
-      id: undefined,
-      // action: "user",
-      data: auth,
-    });
-    return result;
   }
 
   async updateAdminUserInStrapi(
@@ -2721,7 +2307,7 @@ export class UpdateMedusaService extends MedusaService({}) {
     return token;
   }
   async executeLoginAsStrapiSuperAdmin(): Promise<{
-    data: { user: any; token: string };
+    data: { user: any; token?: string };
   }> {
     const auth = {
       email: this.options_.strapi_admin.email,
@@ -2758,7 +2344,6 @@ export class UpdateMedusaService extends MedusaService({}) {
         "Logged In   Admin " + auth.email + " with strapi"
       );
       this.strapiPluginLog("info", "Admin profile", response.data.data.user);
-      //this.strapiPluginLog('info', 'Admin token', response.data.data.token);
 
       this.strapiSuperAdminAuthToken = response.data.data.token;
       this.userAdminProfile = response.data.data.user;
@@ -2788,36 +2373,30 @@ export class UpdateMedusaService extends MedusaService({}) {
   }
   async intializeServer(): Promise<any> {
     await this.registerOrLoginAdmin();
-    if (this.strapiSuperAdminAuthToken) {
-      const user = (await this.registerOrLoginDefaultMedusaUser()).user;
-      if (!this.options_.sync_on_init) {
-        return { status: 200 };
-      }
-      if (user) {
-        const response = await this.executeSync(this.strapiSuperAdminAuthToken);
-        /* const response = await this.configureStrapiMedusaForUser({
-					email: this.options_.strapi_default_user.email,
-					password: this.options_.strapi_default_user.password
-				});*/
-        if (response.status < 300) {
-          this.strapiPluginLog(
-            "info",
-            "medusa - strap -bootstrap confirmed ..please wait till sync completes"
-          );
-          return response;
-        }
-      } else {
-        this.strapiPluginLog("error", "unable to login default user");
-      }
-    } else {
+    if (!this.strapiSuperAdminAuthToken) {
       this.strapiPluginLog("error", "unable to connect as super user");
+      return;
+    }
+
+    const user = (await this.registerOrLoginDefaultMedusaUser()).user;
+    if (!this.options_.sync_on_init) return { status: 200 };
+
+    if (!user) {
+      this.strapiPluginLog("error", "unable to login default user");
+      return;
+    }
+
+    const response = await this.executeSync(this.strapiSuperAdminAuthToken);
+    if (response.status < 300) {
+      this.strapiPluginLog(
+        "info",
+        "medusa - strap -bootstrap confirmed ..please wait till sync completes"
+      );
+      return response;
     }
   }
   async registerOrLoginAdmin(): Promise<{
-    data: {
-      user: any;
-      token: string;
-    };
+    data: { user: any; token?: string };
   }> {
     try {
       await this.registerSuperAdminUserInStrapi();
@@ -2828,20 +2407,20 @@ export class UpdateMedusaService extends MedusaService({}) {
   }
 
   async loginAsDefaultMedusaUser(): Promise<UserCreds> {
-    let userCrds: UserCreds;
     try {
-      userCrds = await this.strapiLoginSendDatalayer(this.defaultAuthInterface);
+      const userCrds = await this.strapiLoginSendDatalayer(
+        this.defaultAuthInterface
+      );
 
       this.strapiPluginLog("info", "Default Medusa User Logged In");
+      return userCrds;
     } catch (error) {
-      if (!userCrds) {
-        this.strapiPluginLog(
-          "error",
-          "Unable to login default medusa user: " + (error as Error).message
-        );
-      }
+      this.strapiPluginLog(
+        "error",
+        "Unable to login default medusa user: " + (error as Error).message
+      );
+      throw error;
     }
-    return userCrds;
   }
 
   async registerOrLoginDefaultMedusaUser(): Promise<UserCreds> {
@@ -2894,9 +2473,7 @@ export class UpdateMedusaService extends MedusaService({}) {
         publicationState,
         locale,
       },
-      {
-        encodeValuesOnly: true, // prettify URL
-      }
+      { encodeValuesOnly: true }
     );
     return query;
   }

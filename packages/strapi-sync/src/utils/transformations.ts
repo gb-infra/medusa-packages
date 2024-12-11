@@ -1,9 +1,10 @@
 import * as _ from "lodash";
 import { ProductDTO } from "@medusajs/framework/types";
+import { StrapiEntity, StrapiSeedType } from "@types";
 
 export async function transformMedusaToStrapiProduct(
-  product: ProductDTO
-): Promise<ProductDTO> {
+  product: Partial<ProductDTO>
+): Promise<Partial<ProductDTO>> {
   const productToSend = _.cloneDeep(product);
   productToSend["product-type"] = _.cloneDeep(productToSend.type);
   delete productToSend.type;
@@ -22,10 +23,35 @@ export async function transformMedusaToStrapiProduct(
   if (productToSend.categories) {
     productToSend["product-categories"] = _.cloneDeep(productToSend.categories);
   }
-  if (productToSend.profile) {
-    productToSend["shipping-profiles"] = _.cloneDeep(productToSend.profile);
-    delete productToSend.profile;
-  }
+
   delete productToSend.collection;
   return productToSend;
+}
+
+export async function translateIdsToMedusaIds(
+  dataToSend: StrapiSeedType
+): Promise<
+  StrapiEntity | Record<string, StrapiEntity> | Record<string, StrapiEntity[]>
+> {
+  if (!dataToSend) {
+    return dataToSend;
+  }
+  const keys = Object.keys(dataToSend);
+  for (const key of keys) {
+    if (_.isArray(dataToSend[key])) {
+      for (const element of dataToSend[key]) {
+        await translateIdsToMedusaIds(element);
+      }
+    } else if (dataToSend[key] instanceof Object) {
+      await translateIdsToMedusaIds(dataToSend[key]);
+    } else if (key == "id") {
+      dataToSend["medusa_id"] = dataToSend[key];
+      delete dataToSend[key];
+    }
+  }
+  return dataToSend;
+}
+
+export function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
