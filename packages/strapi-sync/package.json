@@ -1,6 +1,6 @@
 {
   "name": "@globalbeestech/strapi-sync",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "main": "dist/index.js",
   "repository": {
     "type": "git",
@@ -53,5 +53,8 @@
     "express-rate-limit": "^7.4.1",
     "generate-password": "^1.7.1"
   },
-  "keywords": []
+  "keywords": [
+    "medusa-cms",
+    "medusa-cms-module"
+  ]
 }
