@@ -28,7 +28,7 @@ import { UpdateStrapiService } from "@services";
 import {
   BaseEntity,
   MedusaError,
-  MedusaInternalService,
+  MedusaService,
 } from "@medusajs/framework/utils";
 import {
   IProductModuleService,
@@ -98,7 +98,7 @@ export interface UpdateStrapiServiceParams {
   readonly salesChannelModuleService: ISalesChannelModuleService;
 }
 
-export class UpdateMedusaService extends MedusaInternalService({}) {
+export class UpdateMedusaService extends MedusaService({}) {
   static lastHealthCheckTime = 0;
   algorithm: string;
   options_: StrapiMedusaPluginOptions;
