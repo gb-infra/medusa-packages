@@ -131,7 +131,7 @@ export class UpdateMedusaService extends MedusaService({}) {
     container: UpdateStrapiServiceParams,
     options: StrapiMedusaPluginOptions
   ) {
-    super(container);
+    super(...arguments);
 
     this.selfTestMode = false;
     this.enableAdminDataLogging = process.env.NODE_ENV == "test" ? true : false;
@@ -179,7 +179,10 @@ export class UpdateMedusaService extends MedusaService({}) {
     );
 
     // attaching the default user
-    this.redisClient_ = container.redisConnection;
+    this.redisClient_ = new Redis(
+      options.redis_url,
+      options.redis_options ?? {}
+    );
   }
 
   async startInterface(): Promise<any> {

@@ -1,5 +1,6 @@
 import { AxiosError, Method } from "axios";
 import { BaseEntity } from "@medusajs/framework/utils";
+import { RedisOptions } from "ioredis";
 
 export interface StrapiMedusaPluginOptions {
   sync_on_init?: boolean;
@@ -17,6 +18,8 @@ export interface StrapiMedusaPluginOptions {
   strapi_healthcheck_timeout?: number;
   auto_start?: boolean;
   max_page_size?: number;
+  redis_url: string;
+  redis_options?: RedisOptions;
 }
 
 export type userCreds = {
