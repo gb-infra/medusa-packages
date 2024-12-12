@@ -2,18 +2,19 @@ import {
   DAL,
   InferEntityType,
   InternalModuleDeclaration,
-  ModuleJoinerConfig,
   ModulesSdkTypes,
 } from "@medusajs/framework/types";
 import { MedusaService } from "@medusajs/framework/utils";
-import { EventWebhook } from "@models";
-import { joinerConfig } from "../joiner-config";
+import { EventWebhook, Transformation } from "@models";
 
 type InjectedDependencies = {
   baseRepository: DAL.RepositoryService;
 };
 
-export class EventWebhookModuleService extends MedusaService({ EventWebhook }) {
+export class EventWebhookModuleService extends MedusaService({
+  EventWebhook,
+  Transformation,
+}) {
   protected baseRepository_: DAL.RepositoryService;
   protected readonly eventWebhookService_: ModulesSdkTypes.IMedusaInternalService<
     InferEntityType<typeof EventWebhook>
@@ -26,9 +27,5 @@ export class EventWebhookModuleService extends MedusaService({ EventWebhook }) {
     // @ts-ignore
     super(...arguments);
     this.baseRepository_ = baseRepository;
-  }
-
-  __joinerConfig(): ModuleJoinerConfig {
-    return joinerConfig;
   }
 }

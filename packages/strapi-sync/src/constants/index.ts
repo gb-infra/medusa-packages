@@ -1,6 +1,6 @@
 import {
-    ProductCollectionDTO,
-    ProductDTO,
+  ProductCollectionDTO,
+  ProductDTO,
   RegionDTO,
   ShippingOptionDTO,
   ShippingProfileDTO,
@@ -47,9 +47,6 @@ export const shippingOptionFields: (keyof ShippingOptionDTO)[] = [
   "id",
   "name",
   "price_type",
-  // "amount",
-  // "is_return",
-  // "admin_only",
   "data",
   "metadata",
 ];

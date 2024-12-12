@@ -1,6 +1,5 @@
 import { AxiosError, Method } from "axios";
 import { BaseEntity } from "@medusajs/framework/utils";
-import { IModuleService } from "@medusajs/framework/types";
 
 export interface StrapiMedusaPluginOptions {
   sync_on_init?: boolean;
@@ -79,15 +78,10 @@ export interface StrapiAdminSendParams {
   query?: string;
 }
 
-export interface CreateInStrapiParams<
-  T extends Record<string, any>,
-  K extends IModuleService
-> {
-  id: string;
+export interface CreateInStrapiParams<T extends Record<string, any>> {
+  entity: any;
   authInterface: AuthInterface;
   strapiEntityType: string;
-  serviceMethod: keyof K;
-  medusaService: K;
   selectFields: (keyof T)[];
   relations: string[];
 }
