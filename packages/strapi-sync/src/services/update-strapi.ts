@@ -23,13 +23,12 @@ import {
   AdminResult,
   StrapiEntity,
   MedusaGetResult,
-  LoginTokenExpiredErrorParams,
 } from "@types";
 import { UpdateStrapiService } from "@services";
 import {
   BaseEntity,
   MedusaError,
-  MedusaService,
+  MedusaInternalService,
 } from "@medusajs/framework/utils";
 import {
   IProductModuleService,
@@ -91,18 +90,6 @@ axiosRetry(axios, {
 
 const IGNORE_THRESHOLD = 3; // seconds
 
-export class LoginTokenExpiredError extends AxiosError {
-  constructor(readonly error: LoginTokenExpiredErrorParams) {
-    super(
-      error.message,
-      "401",
-      error.error?.config,
-      error.error?.request,
-      error.error?.response
-    );
-  }
-}
-
 export interface UpdateStrapiServiceParams {
   readonly regionModuleService: IRegionModuleService;
   readonly productModuleService: IProductModuleService;
@@ -111,7 +98,7 @@ export interface UpdateStrapiServiceParams {
   readonly salesChannelModuleService: ISalesChannelModuleService;
 }
 
-export class UpdateMedusaService extends MedusaService({}) {
+export class UpdateMedusaService extends MedusaInternalService({}) {
   static lastHealthCheckTime = 0;
   algorithm: string;
   options_: StrapiMedusaPluginOptions;
@@ -1870,7 +1857,7 @@ export class UpdateMedusaService extends MedusaService({}) {
         query,
       };
     } catch (e) {
-      if (e instanceof LoginTokenExpiredError) {
+      if (e instanceof AxiosError) {
         await this.retrieveRefreshedToken(authInterface, "401");
         return await this.strapiSendDataLayer(params);
       }
@@ -2014,32 +2001,14 @@ export class UpdateMedusaService extends MedusaService({}) {
     method?: Method,
     endPoint?: string
   ): void {
-    if (endPoint) {
+    if (endPoint)
       this.strapiPluginLog("info", `Endpoint Attempted: ${endPoint}`);
-    }
-    try {
-      if (error?.response?.status != 200) {
-        const errorCode = error?.response?.status ?? "none";
-        switch (errorCode) {
-          case 401:
-            throw new LoginTokenExpiredError({
-              error,
-              response: error.response,
-              id,
-              type,
-              data,
-              method,
-              time: new Date(),
-            });
 
-          default:
-            throw error;
-        }
-      }
-    } catch (e) {
-      if (e instanceof LoginTokenExpiredError) throw e;
-      else this.handleError(error, id, type, data, method, endPoint);
-    }
+    if (error?.response?.status === 200) return;
+
+    if (error?.response?.status === 401) throw error;
+
+    this.handleError(error, id, type, data, method, endPoint);
   }
 
   handleError(
