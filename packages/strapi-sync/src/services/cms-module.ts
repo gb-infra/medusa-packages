@@ -24,7 +24,6 @@ import {
   StrapiEntity,
   MedusaGetResult,
 } from "@types";
-import { UpdateStrapiService } from "@services";
 import {
   BaseEntity,
   MedusaError,
@@ -104,7 +103,7 @@ export interface UpdateStrapiServiceParams {
   readonly salesChannelModuleService: ISalesChannelModuleService;
 }
 
-export class UpdateMedusaService extends MedusaService({}) {
+export class CmsModuleService extends MedusaService({}) {
   static lastHealthCheckTime = 0;
   algorithm: string;
   options_: StrapiMedusaPluginOptions;
@@ -149,7 +148,7 @@ export class UpdateMedusaService extends MedusaService({}) {
       `${this.strapi_port ? ":" + this.strapi_port : ""}`;
     this.encryption_key =
       this.options_.strapi_secret || this.options_.strapi_public_key;
-    UpdateStrapiService.isHealthy = false;
+    CmsModuleService.isHealthy = false;
     this.defaultUserEmail = options.strapi_default_user.email;
     this.defaultUserPassword = options.strapi_default_user.password;
     this.defaultAuthInterface = {
@@ -161,7 +160,7 @@ export class UpdateMedusaService extends MedusaService({}) {
     this.executeStrapiHealthCheck().then(
       async (res) => {
         if (res && this.options_.auto_start) {
-          UpdateStrapiService.isHealthy = res;
+          CmsModuleService.isHealthy = res;
           let startupStatus;
           try {
             const startUpResult = await this.startInterface();
@@ -192,7 +191,7 @@ export class UpdateMedusaService extends MedusaService({}) {
         "info",
         "Successfully Bootstrapped the strapi server"
       );
-      UpdateStrapiService.isServiceAccountRegistered = true;
+      CmsModuleService.isServiceAccountRegistered = true;
       return result;
     } catch (e) {
       this.strapiPluginLog(
@@ -206,7 +205,7 @@ export class UpdateMedusaService extends MedusaService({}) {
 
   async waitForServiceAccountCreation() {
     if (process.env.NODE_ENV != "test")
-      while (!UpdateStrapiService.isServiceAccountRegistered) {
+      while (!CmsModuleService.isServiceAccountRegistered) {
         await sleep(3000);
       }
   }
@@ -1173,21 +1172,21 @@ export class UpdateMedusaService extends MedusaService({}) {
         );
         await sleep(3000);
       }
-      UpdateStrapiService.lastHealthCheckTime = Date.now();
+      CmsModuleService.lastHealthCheckTime = Date.now();
       if (!response) {
-        UpdateStrapiService.isHealthy = false;
-        return UpdateMedusaService.isHealthy;
+        CmsModuleService.isHealthy = false;
+        return CmsModuleService.isHealthy;
       }
 
-      UpdateStrapiService.isHealthy = response?.["status"] < 300 ? true : false;
-      if (UpdateStrapiService.isHealthy)
+      CmsModuleService.isHealthy = response?.["status"] < 300 ? true : false;
+      if (CmsModuleService.isHealthy)
         this.strapiPluginLog("info", "Strapi is healthy");
       else this.strapiPluginLog("info", "Strapi is unhealthy");
 
-      return UpdateStrapiService.isHealthy;
+      return CmsModuleService.isHealthy;
     } catch (error) {
       this.strapiPluginLog("error", "Strapi health check failed");
-      UpdateStrapiService.isHealthy = false;
+      CmsModuleService.isHealthy = false;
       return false;
     }
   }
@@ -1197,10 +1196,10 @@ export class UpdateMedusaService extends MedusaService({}) {
 
     const timeInterval = this.options_.strapi_healthcheck_timeout ?? 120e3;
     const timeDifference =
-      currentTime - (UpdateStrapiService.lastHealthCheckTime ?? 0);
+      currentTime - (CmsModuleService.lastHealthCheckTime ?? 0);
     const intervalElapsed = timeDifference > timeInterval;
 
-    if (!UpdateStrapiService.isHealthy) {
+    if (!CmsModuleService.isHealthy) {
       /** clearing tokens if the health check fails dirty */
       this.userTokens = Object.assign(this.userTokens, {});
       this.strapiSuperAdminAuthToken = undefined;
@@ -1209,9 +1208,9 @@ export class UpdateMedusaService extends MedusaService({}) {
     if (process.env.NODE_ENV == "test" && this.selfTestMode) return true;
 
     const result =
-      intervalElapsed || !UpdateStrapiService.isHealthy
+      intervalElapsed || !CmsModuleService.isHealthy
         ? await this.executeStrapiHealthCheck()
-        : UpdateStrapiService.isHealthy; /** sending last known health status */
+        : CmsModuleService.isHealthy; /** sending last known health status */
 
     return result;
   }
@@ -1243,7 +1242,7 @@ export class UpdateMedusaService extends MedusaService({}) {
         ...this.options_.strapi_default_user,
       };
       const registerResponse = await this.executeRegisterMedusaUser(authParams);
-      UpdateStrapiService.isServiceAccountRegistered = true;
+      CmsModuleService.isServiceAccountRegistered = true;
       return registerResponse?.data;
     } catch (error) {
       this.strapiPluginLog("error", "unable to register default user", {
@@ -2316,4 +2315,4 @@ export class UpdateMedusaService extends MedusaService({}) {
     return query;
   }
 }
-export default UpdateMedusaService;
+export default CmsModuleService;

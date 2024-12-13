@@ -1,1 +1,1 @@
-export { default as UpdateStrapiService } from "./update-strapi";
+export { default as CmsModuleService } from "./cms-module";

@@ -8,7 +8,8 @@
       "@repositories": ["./src/repositories"],
       "@types": ["./src/types"],
       "@utils": ["./src/utils"],
-      "@constants": ["./src/constants"]
+      "@constants": ["./src/constants"],
+      "@workflows": ["./src/workflows"]
     }
   },
   "exclude": ["src/**/__tests__", "src/**/__mocks__", "src/**/__fixtures__"]
